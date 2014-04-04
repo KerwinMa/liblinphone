@@ -18,6 +18,8 @@ COMMON_CFLAGS=\
 
 if BUILD_CONSOLE
 
+COMMON_CFLAGS += $(shell pkg-config --cflags --libs dbus-1)
+
 bin_PROGRAMS=linphonec linphonecsh
 
 if BUILD_WIN32

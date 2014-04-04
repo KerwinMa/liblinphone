@@ -36,6 +36,8 @@
 #include <ctype.h>
 #include <stdlib.h>
 
+#include <dbus/dbus.h>
+
 #include <linphonecore.h>
 
 #include "linphonec.h"
@@ -335,14 +337,108 @@ static void linphonec_call_encryption_changed(LinphoneCore *lc, LinphoneCall *ca
 	}
 }
 
+DBusMessage* msg;
+DBusMessageIter args;
+DBusConnection* conn;
+DBusError err;
+int ret;
+dbus_uint32_t serial = 0;
+
+static void init_bdus(){
+
+	// initialise the error value
+	dbus_error_init(&err);
+
+	// connect to the DBUS system bus, and check for errors
+	conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+	if (dbus_error_is_set(&err)) { 
+		fprintf(stderr, "Connection Error (%s)\n", err.message); 
+		dbus_error_free(&err); 
+	}
+	if (NULL == conn) { 
+		exit(1); 
+	}
+
+	// register our name on the bus, and check for errors
+	ret = dbus_bus_request_name(conn, "com.linphone.source", DBUS_NAME_FLAG_REPLACE_EXISTING , &err);
+	if (dbus_error_is_set(&err)) { 
+		fprintf(stderr, "Name Error (%s)\n", err.message); 
+		dbus_error_free(&err); 
+	}
+	if (DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER != ret) { 
+	      exit(1);
+	}  
+}
+
+static void free_dbus(){
+
+	dbus_connection_flush(conn);
+   
+	// free the message and close the connection
+	dbus_message_unref(msg);
+	dbus_connection_close(conn);  
+}
+
+static void sendsignal(char* sigvalue)
+{
+      
+    // create a signal & check for errors 
+      msg = dbus_message_new_signal("/com/linphone/Notification/object", // object name of the signal
+				    "com.linphone.Notification", // interface name of the signal
+				    "sip"); // name of the signal
+      if (NULL == msg) 
+      { 
+	  exit(1); 
+      }
+
+      // append arguments onto signal
+      dbus_message_iter_init_append(msg, &args);
+      if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &sigvalue)) {
+	  exit(1);
+      }
+
+      // send the message and flush the connection
+      if (!dbus_connection_send(conn, msg, &serial)) {
+	  exit(1);
+      }
+}
+
+char res[256]; // TODO remove this
+
+static char *prepare_message(const char *from, const char *st, const char *metadata){
+	sprintf(res, "<sipstate><from>%s</from><st>%s</st><metadata>%s</metadata></sipstate>", from, st, metadata);
+	return res;
+}
+
+static void notify_dbus_state_changed(LinphoneCall* call, LinphoneCallState st){
+	char *from=linphone_call_get_remote_address_as_string(call);
+	switch(st){
+		case LinphoneCallIncomingReceived:
+			sendsignal(prepare_message(from, "LinphoneCallIncomingReceived", ""));
+			break;
+		case LinphoneCallEnd:
+			sendsignal(prepare_message(from, "LinphoneCallEnd", ""));
+			break;
+		case LinphoneCallUpdatedByRemote:
+			sendsignal(prepare_message(from, "LinphoneCallUpdatedByRemote", ""));
+			break;		  
+		default:
+			sendsignal(prepare_message(from, "UnknownEvent", ""));
+		 	break;
+	}
+}
+
 static void linphonec_call_state_changed(LinphoneCore *lc, LinphoneCall *call, LinphoneCallState st, const char *msg){
 	char *from=linphone_call_get_remote_address_as_string(call);
 	long id=(long)linphone_call_get_user_pointer (call);
+	
+	notify_dbus_state_changed(call, st);
+	
 	switch(st){
 		case LinphoneCallEnd:
 			linphonec_out("Call %i with %s ended (%s).\n", id, from, linphone_reason_to_string(linphone_call_get_reason(call)));
 		break;
-		case LinphoneCallResuming:
+		  case LinphoneCallResuming:
 			linphonec_out("Resuming call %i with %s.\n", id, from);
 		break;
 		case LinphoneCallStreamsRunning:
@@ -627,6 +723,8 @@ int _tmain(int argc, _TCHAR* wargv[]) {
 int
 main (int argc, char *argv[]) {
 #endif
+	init_bdus();
+  
 	linphonec_vtable.call_state_changed=linphonec_call_state_changed;
 	linphonec_vtable.notify_presence_received = linphonec_notify_presence_received;
 	linphonec_vtable.new_subscription_requested = linphonec_new_unknown_subscriber;
@@ -644,6 +742,8 @@ main (int argc, char *argv[]) {
 	if (! linphonec_init(argc, argv) ) exit(EXIT_FAILURE);
 
 	linphonec_main_loop (linphonec);
+	
+	free_dbus();
 
 	linphonec_finish(EXIT_SUCCESS);
 
@@ -1585,4 +1685,5 @@ lpc_strip_blanks(char *input)
  *
  *
  ****************************************************************************/
+
 
